@@ -22,7 +22,7 @@ from macaron_6.msg import erp_read
 from sensor_msgs.msg import Imu
 from geometry_msgs.msg import Point
 import matplotlib.pyplot as plt
-from ublox_msgs.msg import NavPVT
+from ublox_msgs.msg import NavPVT,NavVELNED
 from math import atan2 ,pi, sin, cos
 from sensor_msgs.msg import NavSatFix
 
@@ -42,6 +42,8 @@ class Position:
     def __init__(self):
         self.sub_imu = rospy.Subscriber('/imu/data', Imu, self.imu_callback, queue_size=1)
         self.sub_gps = rospy.Subscriber("ublox_gps/fix", NavSatFix, self.gps_callback,queue_size=1)
+        # self.sub_gps_heading = rospy.Subscriber("ublox_gps/navpvt", NavPVT, self.gps_heading_callback,queue_size=1)
+        self.sub_gps_vel = rospy.Subscriber("ublox_gps/navpvt",NavPVT,self.gps_vel_callback,queue_size=1)
         self.erp_sub = rospy.Subscriber('erp_read', erp_read, self.erp_callback, queue_size=1)
 
         self.GPS_INPUT_TIME = time.time()
@@ -49,7 +51,7 @@ class Position:
         self.pos = [0,0]
         self.last_pos = [0,0]
         self.GPS_init_Count = 0
-
+        self.GPS_heading = 0
         self.velocity = 0
         
         self.IMU_init_Count = 0
@@ -80,6 +82,28 @@ class Position:
         self.erp_LAST_TIME = time.time()
         self.dt = 0
 
+        self.heading_radians = 0
+        self.speed_kmph = 0
+
+
+    # def gps_heading_callback(self, heading_msg):
+    #     heading_degrees = heading_msg.heading / 1_000_000
+    #     # 도를 라디안으로 변환
+    #     heading_radians = np.radians(heading_degrees)
+    #     print("----------------------------------------heading",heading_degrees)
+
+    #     return heading_radians
+        
+    def gps_vel_callback(self, vel_msg):
+
+        speed_mps = vel_msg.gSpeed / 1000.0
+        # m/s to km/h
+        self.speed_kmph  = speed_mps * 3.6
+
+        heading_degrees = vel_msg.heading / 1e5
+        # 도를 라디안으로 변환
+        self.heading_radians = np.radians(heading_degrees)
+        print("----------------------------------------heading",self.speed_kmph ,heading_degrees)
 
     def erp_callback(self, data):
         self.steer = (data.read_steer)/71
@@ -105,7 +129,7 @@ class Position:
                 self.erp_count = 0
 
 
-        return self.erp_velocity2 
+        return self.dt,self.erp_velocity2 
     
     def gps_callback(self, gps_msg):
         
@@ -131,6 +155,9 @@ class Position:
             self.Time_interval = abs(self.GPS_INPUT_TIME- self.GPS_LAST_TIME)
             if self.Time_interval > self.timer:
                 distance = np.hypot(self.pos[0] - self.last_pos[0],self.pos[1] - self.last_pos[1])
+                
+                self.GPS_heading = np.arctan2(self.pos[1] - self.last_pos[1],self.pos[0] - self.last_pos[0])
+
                 self.velocity = distance/self.Time_interval *3.6
                 
 
@@ -156,6 +183,9 @@ class Position:
     
         quaternion = (imu.orientation.x, imu.orientation.y, imu.orientation.z, imu.orientation.w)
         roll, self.pitch, self.yaw = euler_from_quaternion(quaternion)
+
+        self.yaw = self.yaw -2*np.pi #임시
+
         if self.yaw  < 0:
             self.yaw  += 2*np.pi
  
@@ -271,6 +301,25 @@ def main():
     IMU_plot = []
     ENC_plot = []
 
+    GPS_X_plot = []
+    GPS_Y_plot = []
+
+    Predict_X_plot = []
+    Predict_Y_plot = []
+
+    GPS_pos = [0,0]
+    XY_ENC_vel = [0,0]
+    XY_ENC_POS = [0,0]
+    last_ENC_VEL = 0
+    X_last_ENC_VEL = 0
+    Y_last_ENC_VEL = 0
+
+    GPS_heading_plot = []
+    IMU_heading_plot = []
+
+    GPS_sensor_heading_plot = []
+    GPS_sensor_velocity_plot = []
+
     count = 0
 
     # 칼만 필터 초기화
@@ -292,14 +341,14 @@ def main():
     filtered_velocities_1 = []
 
     last_timer = time.time()
-    last_ENC_VEL = 0
-
+    
     while not rospy.is_shutdown():  
         GPS_vel= round(p.GPS_VELOCITY(),3)
         IMU_vel = round(p.IMU_velocity_calc(),3)
-        ENC_vel = round(p.erp_Velocity(),3)
+        dt,ENC_vel = p.erp_Velocity()
         count += 1
 
+        ENC_vel = round(ENC_vel,3)
         print(GPS_vel,IMU_vel,ENC_vel)
         
         filtered_value = kf.update(ENC_vel)
@@ -341,6 +390,46 @@ def main():
         filtered_value_1 = kf_1.update(IMU_vel)
         filtered_velocities_1.append(filtered_value_1)
 
+        GPS_pos = p.GPS_POS()
+        GPS_heading = p.GPS_heading
+     
+        # IMU_heading = p.yaw
+        # IMU_heading = p.heading_radians
+        IMU_heading = GPS_heading
+
+        print("-------------------------------",np.rad2deg(GPS_heading),np.rad2deg(IMU_heading))
+
+        ENC_vel_ms = filtered_value / 3.6
+        X_ENC_vel = ENC_vel_ms * np.cos(IMU_heading)
+        Y_ENC_vel = ENC_vel_ms * np.sin(IMU_heading)
+
+        plus_X_ENC_vel = (X_ENC_vel+X_last_ENC_VEL)*dt/2
+        plus_Y_ENC_vel = (Y_ENC_vel+Y_last_ENC_VEL)*dt/2
+
+        init_pos[0] += plus_X_ENC_vel
+        init_pos[1] += plus_Y_ENC_vel
+
+        XY_ENC_POS = [init_pos[0],init_pos[1]]
+
+        # XY_ENC_vel = []
+        X_last_ENC_VEL = X_ENC_vel
+        Y_last_ENC_VEL = Y_ENC_vel
+
+        GPS_X_plot.append(GPS_pos[0])
+        GPS_Y_plot.append(GPS_pos[1])
+
+        Predict_X_plot.append(XY_ENC_POS[0])
+        Predict_Y_plot.append(XY_ENC_POS[1])
+
+
+        GPS_heading_plot.append(GPS_heading)
+        IMU_heading_plot.append(IMU_heading)
+
+
+        GPS_sensor_velocity,GPS_sensor_heading = p.speed_kmph ,p.heading_radians
+        GPS_sensor_heading_plot.append(GPS_sensor_heading)
+        GPS_sensor_velocity_plot.append(GPS_sensor_velocity)
+
         if count > 1300:
             break
         rate.sleep()
@@ -348,19 +437,35 @@ def main():
  
     start = 5    
     plt.figure(1)
-    plt.plot(count_plot[start:], GPS_plot[start:], label='GPS', color='red')
     plt.plot(count_plot[start:], IMU_plot[start:], label='IMU', color='blue')
     plt.plot(count_plot[start:], ENC_plot[start:], label='ENC', color='green')
+    plt.plot(count_plot[start:], GPS_plot[start:], label='GPS', color='red')
     plt.plot(count_plot[start:], filtered_velocities[start:], label='ENC_filter', color='black')
+    plt.plot(count_plot[start:], GPS_sensor_velocity_plot[start:], label='GPS_sensor', color='orange')
     plt.xlabel('count')
     plt.ylabel('velocity')
     plt.title('Velocity')
 
+    # plt.figure(2)
+    # plt.plot(count_plot[start:], filtered_velocities_1[start:], label='IMU', color='blue')
+    # plt.xlabel('count')
+    # plt.ylabel('accel')
+    # plt.title('accel')     
+
     plt.figure(2)
-    plt.plot(count_plot[start:], filtered_velocities_1[start:], label='IMU', color='blue')
+    plt.plot(GPS_X_plot[start:], GPS_Y_plot[start:], label='GPS', color='red')
+    plt.plot(Predict_X_plot[start:], Predict_Y_plot[start:], label='ENC', color='black')
     plt.xlabel('count')
-    plt.ylabel('accel')
-    plt.title('accel')
+    plt.ylabel('position')
+    plt.title('position')
+
+    plt.figure(3)
+    plt.plot(count_plot[start:], GPS_heading_plot[start:], label='GPS_heading', color='red')
+    plt.plot(count_plot[start:], GPS_sensor_heading_plot[start:], label='GPS_sensor_heading', color='orange')
+    plt.plot(count_plot[start:], IMU_heading_plot[start:], label='IMU_heading', color='black')
+    plt.xlabel('count')
+    plt.ylabel('heading')
+    plt.title('heading')    
 
     plt.show()
 

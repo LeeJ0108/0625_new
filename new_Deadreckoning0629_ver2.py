@@ -49,7 +49,7 @@ class Position:
         self.pos = [0,0]
         self.last_pos = [0,0]
         self.GPS_init_Count = 0
-
+        self.GPS_heading = 0
         self.velocity = 0
         
         self.IMU_init_Count = 0
@@ -105,7 +105,7 @@ class Position:
                 self.erp_count = 0
 
 
-        return self.erp_velocity2 
+        return self.dt,self.erp_velocity2 
     
     def gps_callback(self, gps_msg):
         
@@ -131,6 +131,9 @@ class Position:
             self.Time_interval = abs(self.GPS_INPUT_TIME- self.GPS_LAST_TIME)
             if self.Time_interval > self.timer:
                 distance = np.hypot(self.pos[0] - self.last_pos[0],self.pos[1] - self.last_pos[1])
+                
+                self.GPS_heading = np.arctan2(self.pos[1] - self.last_pos[1],self.pos[0] - self.last_pos[0])
+
                 self.velocity = distance/self.Time_interval *3.6
                 
 
@@ -271,6 +274,23 @@ def main():
     IMU_plot = []
     ENC_plot = []
 
+    GPS_X_plot = []
+    GPS_Y_plot = []
+
+    Predict_X_plot = []
+    Predict_Y_plot = []
+
+    GPS_pos = [0,0]
+    XY_ENC_vel = [0,0]
+    XY_ENC_POS = [0,0]
+    last_ENC_VEL = 0
+    X_last_ENC_VEL = 0
+    Y_last_ENC_VEL = 0
+
+    GPS_heading_plot = []
+    IMU_heading_plot = []
+
+
     count = 0
 
     # 칼만 필터 초기화
@@ -292,14 +312,14 @@ def main():
     filtered_velocities_1 = []
 
     last_timer = time.time()
-    last_ENC_VEL = 0
-
+    
     while not rospy.is_shutdown():  
         GPS_vel= round(p.GPS_VELOCITY(),3)
         IMU_vel = round(p.IMU_velocity_calc(),3)
-        ENC_vel = round(p.erp_Velocity(),3)
+        dt,ENC_vel = p.erp_Velocity()
         count += 1
 
+        ENC_vel = round(ENC_vel,3)
         print(GPS_vel,IMU_vel,ENC_vel)
         
         filtered_value = kf.update(ENC_vel)
@@ -341,6 +361,38 @@ def main():
         filtered_value_1 = kf_1.update(IMU_vel)
         filtered_velocities_1.append(filtered_value_1)
 
+        GPS_pos = p.GPS_POS()
+        GPS_heading = p.GPS_heading
+     
+        IMU_heading = p.yaw
+        print("-------------------------------",np.rad2deg(GPS_heading),np.rad2deg(IMU_heading))
+
+        ENC_vel_ms = filtered_value / 3.6
+        X_ENC_vel = ENC_vel_ms * np.cos(IMU_heading)
+        Y_ENC_vel = ENC_vel_ms * np.sin(IMU_heading)
+
+        plus_X_ENC_vel = (X_ENC_vel+X_last_ENC_VEL)*dt/2
+        plus_Y_ENC_vel = (Y_ENC_vel+Y_last_ENC_VEL)*dt/2
+
+        init_pos[0] += plus_X_ENC_vel
+        init_pos[1] += plus_Y_ENC_vel
+
+        XY_ENC_POS = [init_pos[0],init_pos[1]]
+
+        # XY_ENC_vel = []
+        X_last_ENC_VEL = X_ENC_vel
+        Y_last_ENC_VEL = Y_ENC_vel
+
+        GPS_X_plot.append(GPS_pos[0])
+        GPS_Y_plot.append(GPS_pos[1])
+
+        Predict_X_plot.append(XY_ENC_POS[0])
+        Predict_Y_plot.append(XY_ENC_POS[1])
+
+
+        GPS_heading_plot.append(GPS_heading)
+        IMU_heading_plot.append(IMU_heading)
+
         if count > 1300:
             break
         rate.sleep()
@@ -356,11 +408,25 @@ def main():
     plt.ylabel('velocity')
     plt.title('Velocity')
 
+    # plt.figure(2)
+    # plt.plot(count_plot[start:], filtered_velocities_1[start:], label='IMU', color='blue')
+    # plt.xlabel('count')
+    # plt.ylabel('accel')
+    # plt.title('accel')     
+
     plt.figure(2)
-    plt.plot(count_plot[start:], filtered_velocities_1[start:], label='IMU', color='blue')
+    plt.plot(GPS_X_plot[start:], GPS_Y_plot[start:], label='GPS', color='red')
+    plt.plot(Predict_X_plot[start:], Predict_Y_plot[start:], label='ENC', color='black')
     plt.xlabel('count')
-    plt.ylabel('accel')
-    plt.title('accel')
+    plt.ylabel('position')
+    plt.title('position')
+
+    plt.figure(3)
+    plt.plot(count_plot[start:], GPS_heading_plot[start:], label='GPS_heading', color='red')
+    plt.plot(count_plot[start:], IMU_heading_plot[start:], label='IMU_heading', color='black')
+    plt.xlabel('count')
+    plt.ylabel('heading')
+    plt.title('heading')    
 
     plt.show()
 

@@ -275,9 +275,9 @@ def main():
 
     # 칼만 필터 초기화
     process_variance = 1e-5  # 프로세스 노이즈 공분산
-    measurement_variance = 0.00045  # 측정 노이즈 공분산 // 노이즈가 클수록 더 크게
+    measurement_variance = 0.1**3  # 측정 노이즈 공분산
     estimation_error = 1.0  # 초기 추정 오차
-    initial_value = 0 # 초기 값게
+    initial_value = 0 # 초기 값
 
     kf = KalmanFilter(process_variance, measurement_variance, estimation_error, initial_value)
 
@@ -324,24 +324,18 @@ def main():
         if ENC_vel <1:
             filtered_value = 0
 
-        # if p.linear_x2 >= 0:
-        #     time_interval = time.time() - last_timer
-        #     if time_interval > 0.1:
-        #         p.IMU_vel_total = filtered_value
-        #         last_timer = time.time()
-
-        # if p.linear_x2 >= 0:
-        time_interval = time.time() - last_timer
-        if time_interval > 0.01:
-            p.IMU_vel_total = filtered_value
-            last_timer = time.time()        
+        if p.linear_x2 >= 0:
+            time_interval = time.time() - last_timer
+            if time_interval > 0.1:
+                p.IMU_vel_total = filtered_value
+                last_timer = time.time()
 
 
         # filtered_value_1 = kf_1.update(p.IMU_vel_x)
         filtered_value_1 = kf_1.update(IMU_vel)
         filtered_velocities_1.append(filtered_value_1)
 
-        if count > 1300:
+        if count > 300:
             break
         rate.sleep()
         
