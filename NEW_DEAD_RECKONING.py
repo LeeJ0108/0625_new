@@ -88,9 +88,6 @@ class Position:
         self.IMU_ACCEL_X_avg = 0
         self.IMU_VELOCITY_dT = 0
         
-
-    
-
     def gps_callback(self, gps_msg):
         lon = gps_msg.longitude
         lat = gps_msg.latitude
@@ -108,7 +105,7 @@ class Position:
                 print("WAITING")
             self.GPS_LAST_TIME = self.GPS_INPUT_TIME
             self.last_pos = self.pos
-            self.GPS_VELOCITY_COUNT == 1
+            self.GPS_VELOCITY_COUNT = 1
 
         elif self.GPS_VELOCITY_COUNT == 1:
             self.GPS_VELOCITY_dT = abs(self.GPS_INPUT_TIME-self.GPS_LAST_TIME)
@@ -120,8 +117,8 @@ class Position:
                 if self.GPS_VELOCITY_dT != 0:
                     self.GPS_VECOCITY_accel = (self.GPS_VELOCITY_LAST_VEL - self.GPS_VELOCITY_VEL) / self.GPS_VELOCITY_dT /3.6
 
-                while Heading > 2*pi:
-                    Heading -= 2*pi
+                if self.GPS_VECOCITY_Heading > 2*pi:
+                    self.GPS_VECOCITY_Heading -= 2*pi
 
                 self.GPS_VELOCITY_VEL = Distance / self.GPS_VELOCITY_dT * 3.6
 
@@ -132,26 +129,28 @@ class Position:
         return self.GPS_VELOCITY_VEL, self.GPS_VECOCITY_accel, self.GPS_VECOCITY_Heading, self.GPS_VELOCITY_dT
 
 
-    def gps_data_callback(self,data):
+    def gps_data_callback(self,nav_msg):
         self.GPS_DATA_dT = abs(self.GPS_INPUT_TIME - self.GPS_DATA_LAST_TIME)
-
-        velocity_ms = data.gSpeed / 1000
+        velocity_ms = nav_msg.gSpeed / 1000
         self.GPS_DATA_velocity_kmh = velocity_ms * 3.6
 
         if self.GPS_DATA_dT != 0:
             self.GPS_DATA_accel = (self.GPS_DATA_velocity_kmh-self.GPS_DATA_LAST_velocity_kmh) / self.GPS_DATA_dT / 3.6
 
-        pos_heading_degrees = data.heading * 1e5
+        pos_heading_degrees = nav_msg.heading * 1e5
         self.GPS_DATA_pos_heading_radians = np.radians(pos_heading_degrees)
 
-        while self.GPS_DATA_pos_heading_radians > 2*np.pi:
+        if self.GPS_DATA_pos_heading_radians > 2*np.pi:
             self.GPS_DATA_pos_heading_radians  -= 2*np.pi
 
-        heading_degrees = data.headVeh * 1e5
+        heading_degrees = nav_msg.headVeh * 1e5
         self.GPS_DATA_heading_degrees = np.radians(heading_degrees)
 
-        accuracy_velocity = data.sACC /1000
-        accuracy_heading = data.headAcc * 1e5
+        if self.GPS_DATA_heading_degrees > 2*np.pi:
+            self.GPS_DATA_heading_degrees  -= 2*np.pi
+
+        accuracy_velocity = nav_msg.sAcc /1000
+        accuracy_heading = nav_msg.headAcc * 1e5
 
         print("-----속도 정확도-----",accuracy_velocity,"-----헤딩 정확도-----",accuracy_heading)
 
@@ -195,7 +194,7 @@ class Position:
         quaternion = (imu.orientation.x, imu.orientation.y, imu.orientation.z, imu.orientation.w)
         roll, self.pitch, self.yaw = euler_from_quaternion(quaternion)
 
-        while self.yaw  > 2*np.pi:
+        if self.yaw  > 2*np.pi:
             self.yaw  -= 2*np.pi
 
         measurement =[[self.IMU_RAW_accel_x],[self.IMU_RAW_accel_y],[self.IMU_RAW_accel_z]]
@@ -249,7 +248,9 @@ class KalmanFilter_ENC:
         self.value = initial_value
         self.kalman_gain = 0
 
-    def update(self, measurement):
+    def update(self, measurement, update_measurement_variance):
+        self.measurement_variance = update_measurement_variance
+
         # Prediction update
         self.estimation_error += self.process_variance
 
@@ -278,12 +279,16 @@ def main():
     count,count_plot = 0,[]
 
     ###############################################################################
+
     process_variance = 1e-5  # 프로세스 노이즈 공분산
     measurement_variance = 0.000375  # 측정 노이즈 공분산 // 노이즈가 클수록 더 크게
     estimation_error = 1.0  # 초기 추정 오차
     initial_value = 0 # 초기 값게
 
-    kf = KalmanFilter_ENC(process_variance, measurement_variance, estimation_error, initial_value)
+    kf_ENC_VELOCITY = KalmanFilter_ENC(process_variance, measurement_variance, estimation_error, initial_value)
+
+    FILTERED_ENC_VELOCITY = 0
+    FILTERED_ENC_VELOCITY_plot = []
 
     while not rospy.is_shutdown():  
         GPS_pos_velocity,GPS_pos_accel,GPS_pos_heading,GPS_pos_dt = p.GPS_VELOCITY()
@@ -309,22 +314,35 @@ def main():
         count_plot.append(count)
 
         ####################################################################################
+        start = 100
+        if count >start:
+            ENC_VELOCITY_array = []
+            GPS_data_VELOCITY_array = []
+            ENC_VELOCITY_array = np.array(ENC_velocity_plot)
+            GPS_data_VELOCITY_array = np.array(GPS_data_velocity_plot)
+            covariance_matrix = np.cov(ENC_VELOCITY_array[start:], GPS_data_VELOCITY_array[start:],ddof=1)
+            update_measurement_variance = covariance_matrix[0, 1]
+            print("공분산",update_measurement_variance)
+        else:
+            update_measurement_variance = 0.000375 #초기값값    
 
-    
-        if count > 810:
+        FILTERED_ENC_VELOCITY =kf_ENC_VELOCITY.update(ENC_velocity,update_measurement_variance)
+        FILTERED_ENC_VELOCITY_plot.append(FILTERED_ENC_VELOCITY)
+        if count > 500:
             break
+        rate.sleep()
 
     start = 5    
     plt.figure(1)
     plt.plot(count_plot[start:], GPS_pos_velocity_plot[start:], label='GPS', color='red')
-    plt.plot(count_plot[start:], IMU_velocity_plot[start:], label='IMU', color='blue')
+    # plt.plot(count_plot[start:], IMU_velocity_plot[start:], label='IMU', color='blue')
     plt.plot(count_plot[start:], ENC_velocity_plot[start:], label='ENC', color='green')
     plt.plot(count_plot[start:], GPS_data_velocity_plot[start:], label='GPS_DATA', color='orange')
-    plt.plot(count_plot[start:], filtered_velocities[start:], label='ENC_filter', color='black')
+    plt.plot(count_plot[start:], FILTERED_ENC_VELOCITY_plot[start:], label='ENC_filter', color='black')
     plt.xlabel('count')
     plt.ylabel('velocity')
     plt.title('Velocity')
-
+    plt.show()
 
 
 if __name__ == "__main__":
